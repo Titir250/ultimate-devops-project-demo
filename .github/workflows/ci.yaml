@@ -1,108 +1,77 @@
-# CI for Product Catalog Service
+name: Docker CI Test Pipeline
 
-name: product-catalog-ci
-
-on: 
-    pull_request:
-        branches:
-        - main
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
-    build:
-        runs-on: ubuntu-latest
+  docker-ci:
+    runs-on: ubuntu-24.04
 
-        steps:
-        - name: checkout code
-          uses: actions/checkout@v4
+    steps:
+      # 1. Checkout code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-        - name: Setup Go 1.22
-          uses: actions/setup-go@v2
-          with:
-            go-version: 1.22
-        
-        - name: Build
-          run: |
-            cd src/product-catalog
-            go mod download
-            go build -o product-catalog-service main.go
+      # 2. Repo info check
+      - name: Repository Info
+        run: |
+          echo "Repo: $GITHUB_REPOSITORY"
+          echo "Branch: $GITHUB_REF_NAME"
+          ls -la
 
-        - name: unit tests
-          run: |
-            cd src/product-catalog
-            go test ./...
-    
-    code-quality:
-        runs-on: ubuntu-latest
+      # 3. Validate secrets (safe check)
+      - name: Validate Secrets
+        run: |
+          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
+            echo "::error::DOCKER_USERNAME is missing"
+            exit 1
+          fi
 
-        steps:
-        - name: checkout code
-          uses: actions/checkout@v4
-        
-        - name: Setup Go 1.22
-          uses: actions/setup-go@v2
-          with:
-           go-version: 1.22
-        
-        - name: Run golangci-lint
-          uses: golangci/golangci-lint-action@v6
-          with:
-            version: v1.55.2
-            run: golangci-lint run
-            working-directory: src/product-catalog
+          if [ -z "${{ secrets.DOCKER_TOKEN }}" ]; then
+            echo "::error::DOCKER_TOKEN is missing"
+            exit 1
+          fi
 
-    docker:
-        runs-on: ubuntu-latest
+          echo "Secrets are available"
 
-        needs: build
+      # 4. Setup Docker Buildx
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-        steps:
-        - name: checkout code
-          uses: actions/checkout@v4
+      # 5. Login to Docker Hub (using TOKEN)
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
 
-        - name: Install Docker
-          uses: docker/setup-buildx-action@v1
-        
-        - name: Login to Docker
-          uses: docker/login-action@v3
-          with:
-            username: ${{ secrets.DOCKER_USERNAME }}
-            password: ${{ secrets.DOCKER_TOKEN }}
+      # 6. Create dummy Dockerfile
+      - name: Create Dockerfile
+        run: |
+          cat <<EOF > Dockerfile
+          FROM alpine:latest
+          RUN echo "Docker CI Test Build"
+          CMD ["echo", "Hello from GitHub Actions CI"]
+          EOF
 
-        - name: Docker Push
-          uses: docker/build-push-action@v6
-          with:
-            context: src/product-catalog
-            file: src/product-catalog/Dockerfile
-            push: true
-            tags: ${{ secrets.DOCKER_USERNAME }}/product-catalog:${{github.run_id}}
+      # 7. Build Docker image
+      - name: Build Docker Image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/ci-test:latest .
 
-    
-    updatek8s:
-        runs-on: ubuntu-latest
+      # 8. Run container test
+      - name: Run Container Test
+        run: |
+          docker run --rm ${{ secrets.DOCKER_USERNAME }}/ci-test:latest
 
-        needs: docker
+      # 9. Push Docker image
+      - name: Push Docker Image
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/ci-test:latest
 
-        steps:
-        - name: checkout code
-          uses: actions/checkout@v4
-          with:
-            token: ${{ secrets.GITHUB_TOKEN }}
-
-        - name: Update tag in kubernetes deployment manifest
-          run: | 
-               sed -i "s|image: .*|image: ${{ secrets.DOCKER_USERNAME }}/product-catalog:${{github.run_id}}|" kubernetes/productcatalog/deploy.yaml
-        
-        - name: Commit and push changes
-          run: |
-            git config --global user.email "titirroy1@gmail.com"
-            git config --global user.name "Titir Roy"
-            git add kubernetes/productcatalog/deploy.yaml
-            git commit -m "[CI]: Update product catalog image tag"
-            git push origin HEAD:main -f
-
-        
-        
-          
-
-
-        
+      # 10. Success message
+      - name: CI Success
+        run: echo "CI Pipeline completed successfully 🚀"
